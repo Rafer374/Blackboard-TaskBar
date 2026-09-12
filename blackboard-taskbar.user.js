@@ -9,7 +9,7 @@
 // @supportURL   https://github.com/Rafer374/Blackboard-TaskBar/issues
 // @updateURL    https://github.com/Rafer374/Blackboard-TaskBar/raw/main/blackboard-taskbar.user.js
 // @downloadURL  https://github.com/Rafer374/Blackboard-TaskBar/raw/main/blackboard-taskbar.user.js
-// @match        https://*/ultra/*
+// @match        https://blackboard.und.edu/*
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @run-at       document-idle
