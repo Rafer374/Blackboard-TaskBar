@@ -29,7 +29,7 @@ A Tampermonkey userscript that adds a simple assignment to-do sidebar to Blackbo
    - [Chrome / Edge / Brave](https://chromewebstore.google.com/detail/tampermonkey/dhdgffkkebhmkfjojejmpbldmpobfkfo)
    - [Firefox](https://addons.mozilla.org/firefox/addon/tampermonkey/)
    - [Safari](https://apps.apple.com/app/tampermonkey/id1482490089)
-2. **Chrome / Edge / Brave only:** open `chrome://extensions` (or `edge://extensions`), and turn on the **Developer mode** toggle in the top-right corner. Chrome requires this for any userscript to run. Skip this on Firefox and Safari.
+2. **Chrome / Edge / Brave only:** open `chrome://extensions` (or `edge://extensions`), click **Details** on Tampermonkey, and make sure **Allow User Scripts** is turned on. On older Chrome versions the switch is instead the **Developer mode** toggle in the top-right corner of that page. Without one of these, Tampermonkey installs fine but never runs anything. Skip this on Firefox and Safari.
 3. Click this link: **[Install Blackboard TaskBar](https://github.com/Rafer374/Blackboard-TaskBar/raw/main/blackboard-taskbar.user.js)**
 4. Tampermonkey opens a page showing the script. Click **Install**.
 5. Go to your school's Blackboard site and log in as usual. The panel appears in the top-right corner.
