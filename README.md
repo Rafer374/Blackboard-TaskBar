@@ -4,16 +4,19 @@ A Tampermonkey userscript that adds a simple assignment to-do sidebar to Blackbo
 
 **License:** [PolyForm Noncommercial 1.0.0](LICENSE) — free for personal/noncommercial use, no reselling.
 
-> **Status:** v0.2 beta. Pulls assignments from Blackboard's activity stream. Points possible and automatic hiding of already-submitted work are not wired yet; you can check items off manually in the meantime.
+> **Status:** v0.5 beta. Reads your gradebook in each current course, so items you have already submitted or that have been graded drop off automatically. Tested on one Ultra site so far.
 
 ## What it does
 
-- Shows a collapsible panel (top-right) on Blackboard pages listing every active, unsubmitted assignment that has a due date.
+- Shows a collapsible panel (top-right) on Blackboard pages listing every unsubmitted assignment, quiz, or graded discussion that has a due date, across all your current courses.
 - Each item shows the assignment name, course, due date/time, points possible, and a link to open it.
-- Groups items by due date: **Overdue / Today / Tomorrow / This Week / Later**, sorted by due date within each group.
+- **List view** groups items by due date: **Overdue / Today / Tomorrow / This Week / Later**, sorted by due date within each group.
+- **Week view** shows one week at a time, grouped by day, with previous/next arrows to look ahead. Click the date range to jump back to the current week.
 - Filter by course with a dropdown.
-- Check items off manually. This is stored only in your browser and does **not** touch Blackboard's actual submission state.
-- Toggle to show or hide completed items.
+- A weekly progress ring: outer ring is everything due that week, inner rings are one per course, with a legend. Counts both work you've submitted in Blackboard and items you've checked off.
+- Anything you've already submitted or that has been graded counts as done automatically and is hidden by default. Turn on **Show done** to see it, tagged Submitted or Graded.
+- Check remaining items off manually. This is stored only in your browser and does **not** touch Blackboard's actual submission state.
+- Collapse it to a small vertical tab on the right edge of the window. Click the tab to open it again.
 - Refreshes on page load and every 10 minutes.
 - All settings and check-offs persist across page loads via Tampermonkey storage.
 
@@ -29,11 +32,12 @@ A Tampermonkey userscript that adds a simple assignment to-do sidebar to Blackbo
    - [Chrome / Edge / Brave](https://chromewebstore.google.com/detail/tampermonkey/dhdgffkkebhmkfjojejmpbldmpobfkfo)
    - [Firefox](https://addons.mozilla.org/firefox/addon/tampermonkey/)
    - [Safari](https://apps.apple.com/app/tampermonkey/id1482490089)
-2. Click this link: **[Install Blackboard TaskBar](https://github.com/Rafer374/Blackboard-TaskBar/raw/main/blackboard-taskbar.user.js)**
-3. Tampermonkey opens a page showing the script. Click **Install**.
-4. Go to your school's Blackboard site and log in as usual. The panel appears in the top-right corner.
+2. **Chrome / Edge / Brave only:** open `chrome://extensions` (or `edge://extensions`), click **Details** on Tampermonkey, and make sure **Allow User Scripts** is turned on. On older Chrome versions the switch is instead the **Developer mode** toggle in the top-right corner of that page. Without one of these, Tampermonkey installs fine but never runs anything. Skip this on Firefox and Safari.
+3. Click this link: **[Install Blackboard TaskBar](https://github.com/Rafer374/Blackboard-TaskBar/raw/main/blackboard-taskbar.user.js)**
+4. Tampermonkey opens a page showing the script. Click **Install**.
+5. Go to your school's Blackboard site and log in as usual. The panel appears in the top-right corner.
 
-Chrome users: if the install page never appears, Chrome may require you to turn on **Developer mode** under `chrome://extensions` for userscripts to run. Tampermonkey's own page explains this if needed.
+**If clicking the link just downloads a `.js` file** instead of opening Tampermonkey, step 2 was skipped or Tampermonkey isn't turned on. Fix that, then either click the link again or open the Tampermonkey icon → **Dashboard** → **Utilities** → paste the link into **Import from URL**. Do not double-click the downloaded file; Windows will try to run it as a desktop script and show an error. Just delete it.
 
 ## Updating
 
@@ -46,7 +50,8 @@ Open the script in the Tampermonkey editor and adjust the constants near the top
 | Constant | Default | Meaning |
 |---|---|---|
 | `REFRESH_INTERVAL_MS` | `600000` (10 min) | How often the panel refetches assignments |
-| `THIS_WEEK_DAYS` | `7` | How many days ahead count as "This Week" |
+| `THIS_WEEK_DAYS` | `7` | List view: how many days ahead count as "This Week" |
+| `WEEK_STARTS_ON` | `0` | Week view: first day of the week, `0` = Sunday, `1` = Monday |
 
 ## Disclaimer
 
