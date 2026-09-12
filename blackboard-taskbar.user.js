@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Blackboard TaskBar
 // @namespace    https://github.com/Rafer374/Blackboard-TaskBar
-// @version      0.4.0
+// @version      0.5.0
 // @description  Local assignment to-do sidebar for Blackboard Learn Ultra. No backend, no telemetry, runs entirely in your browser.
 // @author       Rafer374
 // @license      PolyForm-Noncommercial-1.0.0; https://polyformproject.org/licenses/noncommercial/1.0.0
@@ -42,7 +42,8 @@
   // Everything Blackboard-specific lives here. fetchAssignments() resolves to
   // an array of normalized items:
   //   { id: string, name: string, courseName: string, courseId: string,
-  //     dueAt: Date, points: number|null, url: string }
+  //     dueAt: Date, points: number|null, url: string,
+  //     submitted: boolean, status: string|null }
   //
   // Schema below was taken from real captured responses on an Ultra site.
   // Ultra's own student gradebook page uses exactly these calls:
@@ -61,8 +62,8 @@
   //       -> { results: [{ columnId, status: "NEEDS_GRADING"|"GRADED"|null,
   //              isExempt, effectiveScore, lastAttemptId }] }
   //
-  // A column is "active" when it has a due date, is a real scorable content
-  // item, and the user's grade row (if any) shows no submission or score yet.
+  // Every scorable content column with a due date becomes an item. The grade
+  // row (if any) decides whether it is already submitted or graded.
   //
   // Ultra pages carry a <base> tag pointing at a CDN, so every URL here is
   // built from location.origin rather than left relative. Internal API calls
@@ -168,8 +169,8 @@
       return base + '/grades';
     },
 
-    // Grade rows that mean "this is already handled".
-    DONE_STATUSES: { NEEDS_GRADING: true, GRADED: true, COMPLETED: true },
+    // Grade-row statuses that mean the student has already turned it in.
+    SUBMITTED_STATUSES: { NEEDS_GRADING: 'Submitted', GRADED: 'Graded', COMPLETED: 'Completed' },
 
     parseCourse(course, gb) {
       const byColumn = new Map();
@@ -184,10 +185,11 @@
           const dueAt = new Date(c.dueDate);
           if (Number.isNaN(dueAt.getTime())) return;
           const g = byColumn.get(c.id);
+          let status = null; // null = still open; otherwise a short label
           if (g) {
-            if (g.isExempt === true) return;
-            if (g.status && this.DONE_STATUSES[g.status]) return;
-            if (g.effectiveScore !== undefined && g.effectiveScore !== null) return;
+            if (g.isExempt === true) return; // not a task for this student
+            if (g.status && this.SUBMITTED_STATUSES[g.status]) status = this.SUBMITTED_STATUSES[g.status];
+            else if (g.effectiveScore !== undefined && g.effectiveScore !== null) status = 'Graded';
           }
           const points = typeof c.possible === 'number' ? c.possible : null;
           out.push({
@@ -197,6 +199,8 @@
             courseName: course.name,
             dueAt,
             points,
+            submitted: status !== null,
+            status,
             url: this.itemUrl(course.id, c.contentId, c.scoreProviderHandle),
           });
         } catch (err) { /* skip unreadable column */ }
@@ -332,12 +336,53 @@
     return groups;
   }
 
+  // "Done" = submitted/graded in Blackboard, or checked off by hand.
+  function isDone(it) {
+    return !!it.submitted || !!state.completed[it.id];
+  }
+
+  function courseFilteredItems() {
+    return items.filter((it) => !state.courseFilter || it.courseId === state.courseFilter);
+  }
+
   function filteredItems() {
-    return items.filter((it) => {
-      if (state.courseFilter && it.courseId !== state.courseFilter) return false;
-      if (!state.showCompleted && state.completed[it.id]) return false;
-      return true;
+    return courseFilteredItems().filter((it) => state.showCompleted || !isDone(it));
+  }
+
+  // Fixed categorical order (validated light-surface palette). Courses are
+  // assigned a slot by sorted name so a course keeps its color across reloads.
+  const COURSE_COLORS = ['#2a78d6', '#eb6834', '#1baf7a', '#eda100', '#e87ba4', '#008300', '#4a3aa7', '#e34948'];
+
+  function courseSlots() {
+    const seen = new Map();
+    items.forEach((it) => { if (!seen.has(it.courseId)) seen.set(it.courseId, it.courseName); });
+    const ordered = [...seen.entries()].sort((a, b) => a[1].localeCompare(b[1]));
+    const slots = new Map();
+    ordered.forEach(([id, name], i) => slots.set(id, { name, color: COURSE_COLORS[i % COURSE_COLORS.length], index: i }));
+    return slots;
+  }
+
+  // Short course label: text before the first ':' or ' - ', e.g. "ME 464".
+  function shortCourse(name) {
+    const m = String(name).match(/^([^:]{1,14})(?::|\s-\s)/);
+    return m ? m[1].trim() : String(name).slice(0, 14);
+  }
+
+  // Progress for items due in [start, end): overall and per course.
+  function weekProgress(start, end) {
+    const inWeek = courseFilteredItems().filter((it) => it.dueAt >= start && it.dueAt < end);
+    const perCourse = new Map();
+    inWeek.forEach((it) => {
+      const c = perCourse.get(it.courseId) || { courseId: it.courseId, name: it.courseName, total: 0, done: 0 };
+      c.total++;
+      if (isDone(it)) c.done++;
+      perCourse.set(it.courseId, c);
     });
+    return {
+      total: inWeek.length,
+      done: inWeek.filter(isDone).length,
+      courses: [...perCourse.values()],
+    };
   }
 
   // ---------------------------------------------------------------------------
@@ -423,6 +468,22 @@
     .bbt-weeknav .bbt-range { flex: 1; text-align: center; font-weight: 600; cursor: pointer; }
     .bbt-weeknav .bbt-range:hover { text-decoration: underline; }
     .bbt-weeknav .bbt-range small { display: block; font-weight: 400; color: #666; font-size: 11px; }
+    .bbt-progress {
+      display: flex; align-items: center; gap: 12px;
+      padding: 8px 10px; border-bottom: 1px solid #e5e5e5;
+    }
+    .bbt-progress svg { flex-shrink: 0; display: block; }
+    .bbt-ring-track { fill: none; stroke: #ececec; }
+    .bbt-ring-fill { fill: none; stroke-linecap: round; transform: rotate(-90deg); transform-origin: 50% 50%; }
+    .bbt-ring-pct { font-size: 16px; font-weight: 700; fill: #222; }
+    .bbt-ring-sub { font-size: 9px; fill: #666; }
+    .bbt-legend { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; font-size: 12px; }
+    .bbt-legend-title { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: #666; margin-bottom: 2px; }
+    .bbt-legend-row { display: flex; align-items: center; gap: 6px; min-width: 0; }
+    .bbt-legend-dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
+    .bbt-legend-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #333; }
+    .bbt-legend-count { color: #666; font-variant-numeric: tabular-nums; }
+    .bbt-legend-empty { color: #888; font-size: 12px; }
     .bbt-body { overflow-y: auto; padding: 4px 0; flex: 1; }
     .bbt-group-title {
       padding: 6px 10px 2px; font-size: 11px; font-weight: 700;
@@ -443,6 +504,10 @@
     .bbt-item-course { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
     .bbt-item.bbt-done .bbt-item-name { text-decoration: line-through; color: #888; font-weight: 400; }
     .bbt-item.bbt-done .bbt-item-meta { color: #999; }
+    .bbt-item-status {
+      background: #e6f2ea; color: #1d6b3a; border-radius: 3px; padding: 0 5px;
+      font-size: 11px; font-weight: 600;
+    }
     .bbt-empty, .bbt-error { padding: 14px 10px; color: #666; text-align: center; }
     .bbt-error { color: #b00020; }
     .bbt-footer {
@@ -482,7 +547,7 @@
   }
 
   let host, wrap, body, footer, countBadge, tabBadge, courseSelect, showCompletedBox;
-  let refreshBtn, listBtn, weekBtn, weekNav, weekRange;
+  let refreshBtn, listBtn, weekBtn, weekNav, weekRange, progressBox;
 
   function buildPanel() {
     if (document.getElementById(PANEL_ID)) return;
@@ -513,6 +578,7 @@
 
     body = el('div', { class: 'bbt-body' });
     footer = el('div', { class: 'bbt-footer' });
+    progressBox = el('div', { class: 'bbt-progress' });
 
     const panel = el('div', { class: 'bbt-panel' }, [
       el('div', { class: 'bbt-header' }, [
@@ -525,6 +591,7 @@
         el('label', { class: 'bbt-toggle' }, [showCompletedBox, el('span', { text: 'Show done' })]),
       ]),
       weekNav,
+      progressBox,
       body,
       footer,
     ]);
@@ -576,9 +643,10 @@
   }
 
   function renderItem(it, timeOnly) {
-    const done = !!state.completed[it.id];
+    const done = isDone(it);
     const cb = el('input', {
-      type: 'checkbox', title: done ? 'Mark incomplete' : 'Mark complete',
+      type: 'checkbox',
+      title: it.submitted ? (it.status + ' in Blackboard') : (done ? 'Mark incomplete' : 'Mark complete'),
       onchange: (e) => {
         if (e.target.checked) state.completed[it.id] = true;
         else delete state.completed[it.id];
@@ -587,10 +655,12 @@
       },
     });
     cb.checked = done;
+    cb.disabled = !!it.submitted; // Blackboard's state wins; nothing to toggle
     const meta = [el('span', { class: 'bbt-item-course', text: it.courseName, title: it.courseName })];
     meta.push(el('span', { text: timeOnly ? fmtTime(it.dueAt) : fmtDue(it.dueAt) }));
     const pts = fmtPoints(it.points);
     if (pts) meta.push(el('span', { text: pts }));
+    if (it.submitted) meta.push(el('span', { class: 'bbt-item-status', text: it.status }));
     return el('div', { class: 'bbt-item' + (done ? ' bbt-done' : '') }, [
       cb,
       el('div', { class: 'bbt-item-main' }, [
@@ -598,6 +668,62 @@
         el('div', { class: 'bbt-item-meta' }, meta),
       ]),
     ]);
+  }
+
+  const SVG_NS = 'http://www.w3.org/2000/svg';
+  function svgEl(tag, attrs) {
+    const n = document.createElementNS(SVG_NS, tag);
+    Object.keys(attrs || {}).forEach((k) => n.setAttribute(k, attrs[k]));
+    return n;
+  }
+
+  // Concentric rings: outer = all courses combined, inner = one per course
+  // (fixed color per course, legend alongside so color is never the only cue).
+  function renderProgress(start, end, label) {
+    const prog = weekProgress(start, end);
+    const slots = courseSlots();
+    const rings = prog.courses
+      .map((c) => ({ ...c, slot: slots.get(c.courseId) }))
+      .sort((a, b) => a.slot.index - b.slot.index)
+      .slice(0, COURSE_COLORS.length);
+
+    const size = 104, cx = size / 2, cy = size / 2;
+    const MIN_R = 22; // keep inner rings clear of the center text
+    const svg = svgEl('svg', { width: size, height: size, viewBox: '0 0 ' + size + ' ' + size, role: 'img',
+      'aria-label': prog.done + ' of ' + prog.total + ' complete' });
+    const ringSpecs = [{ r: 47, w: 6, color: '#2b5797', done: prog.done, total: prog.total }];
+    rings.forEach((c, i) => ringSpecs.push({ r: 47 - 7 * (i + 1), w: 4, color: c.slot.color, done: c.done, total: c.total }));
+    ringSpecs.forEach((rs) => {
+      if (rs.r < MIN_R) return; // legend still lists the course
+      const circ = 2 * Math.PI * rs.r;
+      svg.appendChild(svgEl('circle', { class: 'bbt-ring-track', cx, cy, r: rs.r, 'stroke-width': rs.w }));
+      const frac = rs.total ? rs.done / rs.total : 0;
+      if (frac > 0) {
+        svg.appendChild(svgEl('circle', { class: 'bbt-ring-fill', cx, cy, r: rs.r, 'stroke-width': rs.w, stroke: rs.color,
+          'stroke-dasharray': (circ * frac) + ' ' + circ }));
+      }
+    });
+    const pct = prog.total ? Math.round(100 * prog.done / prog.total) : 0;
+    const t1 = svgEl('text', { class: 'bbt-ring-pct', x: cx, y: cy - 1, 'text-anchor': 'middle', 'dominant-baseline': 'middle' });
+    t1.textContent = pct + '%';
+    const t2 = svgEl('text', { class: 'bbt-ring-sub', x: cx, y: cy + 12, 'text-anchor': 'middle', 'dominant-baseline': 'middle' });
+    t2.textContent = prog.done + '/' + prog.total + ' done';
+    svg.appendChild(t1); svg.appendChild(t2);
+
+    const legend = el('div', { class: 'bbt-legend' }, [el('div', { class: 'bbt-legend-title', text: label })]);
+    if (!rings.length) legend.appendChild(el('div', { class: 'bbt-legend-empty', text: 'Nothing due.' }));
+    rings.forEach((c) => {
+      const dot = el('span', { class: 'bbt-legend-dot' }); dot.style.background = c.slot.color;
+      legend.appendChild(el('div', { class: 'bbt-legend-row', title: c.name }, [
+        dot,
+        el('span', { class: 'bbt-legend-name', text: shortCourse(c.name) }),
+        el('span', { class: 'bbt-legend-count', text: c.done + '/' + c.total }),
+      ]));
+    });
+
+    progressBox.textContent = '';
+    progressBox.appendChild(svg);
+    progressBox.appendChild(legend);
   }
 
   function render() {
@@ -608,7 +734,7 @@
 
     const now = new Date();
     const visible = filteredItems();
-    const openCount = items.filter((it) => !state.completed[it.id]).length;
+    const openCount = items.filter((it) => !isDone(it)).length;
     countBadge.textContent = String(openCount);
     tabBadge.textContent = String(openCount);
 
@@ -623,10 +749,13 @@
       groups = groupByDay(visible.filter((it) => it.dueAt >= weekStart && it.dueAt < weekEnd), weekStart);
       emptyMsg = 'Nothing due this week.';
       timeOnly = true;
+      renderProgress(weekStart, weekEnd, weekOffset === 0 ? 'This week' : fmtWeekRange(weekStart));
     } else {
       weekNav.style.display = 'none';
       groups = groupByBucket(visible, now);
-      emptyMsg = 'Nothing due. 🎉';
+      emptyMsg = items.length && !visible.length ? 'All caught up. 🎉' : 'Nothing due. 🎉';
+      const ws = startOfWeek(now);
+      renderProgress(ws, addDays(ws, 7), 'This week');
     }
 
     body.textContent = '';

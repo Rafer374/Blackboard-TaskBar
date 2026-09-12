@@ -4,7 +4,7 @@ A Tampermonkey userscript that adds a simple assignment to-do sidebar to Blackbo
 
 **License:** [PolyForm Noncommercial 1.0.0](LICENSE) — free for personal/noncommercial use, no reselling.
 
-> **Status:** v0.4 beta. Reads your gradebook in each current course, so items you have already submitted or that have been graded drop off automatically. Tested on one Ultra site so far.
+> **Status:** v0.5 beta. Reads your gradebook in each current course, so items you have already submitted or that have been graded drop off automatically. Tested on one Ultra site so far.
 
 ## What it does
 
@@ -13,8 +13,9 @@ A Tampermonkey userscript that adds a simple assignment to-do sidebar to Blackbo
 - **List view** groups items by due date: **Overdue / Today / Tomorrow / This Week / Later**, sorted by due date within each group.
 - **Week view** shows one week at a time, grouped by day, with previous/next arrows to look ahead. Click the date range to jump back to the current week.
 - Filter by course with a dropdown.
-- Check items off manually. This is stored only in your browser and does **not** touch Blackboard's actual submission state.
-- Toggle to show or hide completed items.
+- A weekly progress ring: outer ring is everything due that week, inner rings are one per course, with a legend. Counts both work you've submitted in Blackboard and items you've checked off.
+- Anything you've already submitted or that has been graded counts as done automatically and is hidden by default. Turn on **Show done** to see it, tagged Submitted or Graded.
+- Check remaining items off manually. This is stored only in your browser and does **not** touch Blackboard's actual submission state.
 - Collapse it to a small vertical tab on the right edge of the window. Click the tab to open it again.
 - Refreshes on page load and every 10 minutes.
 - All settings and check-offs persist across page loads via Tampermonkey storage.
