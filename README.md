@@ -4,16 +4,18 @@ A Tampermonkey userscript that adds a simple assignment to-do sidebar to Blackbo
 
 **License:** [PolyForm Noncommercial 1.0.0](LICENSE) — free for personal/noncommercial use, no reselling.
 
-> **Status:** v0.3 beta. Reads your gradebook in each current course, so items you have already submitted or that have been graded drop off automatically. Tested on one Ultra site so far.
+> **Status:** v0.4 beta. Reads your gradebook in each current course, so items you have already submitted or that have been graded drop off automatically. Tested on one Ultra site so far.
 
 ## What it does
 
 - Shows a collapsible panel (top-right) on Blackboard pages listing every unsubmitted assignment, quiz, or graded discussion that has a due date, across all your current courses.
 - Each item shows the assignment name, course, due date/time, points possible, and a link to open it.
-- Groups items by due date: **Overdue / Today / Tomorrow / This Week / Later**, sorted by due date within each group.
+- **List view** groups items by due date: **Overdue / Today / Tomorrow / This Week / Later**, sorted by due date within each group.
+- **Week view** shows one week at a time, grouped by day, with previous/next arrows to look ahead. Click the date range to jump back to the current week.
 - Filter by course with a dropdown.
 - Check items off manually. This is stored only in your browser and does **not** touch Blackboard's actual submission state.
 - Toggle to show or hide completed items.
+- Collapse it to a small vertical tab on the right edge of the window. Click the tab to open it again.
 - Refreshes on page load and every 10 minutes.
 - All settings and check-offs persist across page loads via Tampermonkey storage.
 
@@ -47,7 +49,8 @@ Open the script in the Tampermonkey editor and adjust the constants near the top
 | Constant | Default | Meaning |
 |---|---|---|
 | `REFRESH_INTERVAL_MS` | `600000` (10 min) | How often the panel refetches assignments |
-| `THIS_WEEK_DAYS` | `7` | How many days ahead count as "This Week" |
+| `THIS_WEEK_DAYS` | `7` | List view: how many days ahead count as "This Week" |
+| `WEEK_STARTS_ON` | `0` | Week view: first day of the week, `0` = Sunday, `1` = Monday |
 
 ## Disclaimer
 
