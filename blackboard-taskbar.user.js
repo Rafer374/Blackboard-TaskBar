@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Blackboard TaskBar
 // @namespace    https://github.com/Rafer374/Blackboard-TaskBar
-// @version      0.2.1
+// @version      0.3.0
 // @description  Local assignment to-do sidebar for Blackboard Learn Ultra. No backend, no telemetry, runs entirely in your browser.
 // @author       Rafer374
 // @license      PolyForm-Noncommercial-1.0.0; https://polyformproject.org/licenses/noncommercial/1.0.0
@@ -43,33 +43,39 @@
   //   { id: string, name: string, courseName: string, courseId: string,
   //     dueAt: Date, points: number|null, url: string }
   //
-  // Schema below was taken from real captured responses on an Ultra site:
-  //   GET  /learn/api/v1/users/me                      -> { id: "_123_1", ... }
-  //   GET  /learn/api/v1/users/{id}/memberships?expand=course
-  //        -> { results: [{ courseId, course: { id, name, displayName,
-  //                          effectiveAvailability, isClosed } }], paging }
-  //   POST /learn/api/v1/streams/ultra  (2-step handshake, see fetchStream)
-  //        -> { sv_streamEntries: [{ providerId, se_id, se_courseId,
-  //               itemSpecificData: { title, courseContentId,
-  //                 contentDetails: { contentHandler },
-  //                 notificationDetails: { courseId, dueDate, sourceType,
-  //                                        sourceId, gradebookCategoryName } },
-  //               extraAttribs: { event_type } }],
-  //             sv_providers: [{ sp_provider, sp_oldest, sp_newest, sp_refreshDate }],
-  //             sv_moreData }
+  // Schema below was taken from real captured responses on an Ultra site.
+  // Ultra's own student gradebook page uses exactly these calls:
+  //
+  //   GET /learn/api/v1/users/me
+  //       -> { id: "_123_1", ... }
+  //   GET /learn/api/v1/users/{id}/memberships?expand=course.effectiveAvailability,...
+  //       -> { results: [{ courseId, course: { id, name, displayName,
+  //              effectiveAvailability, isClosed, term: { endDate } } }],
+  //            paging: { nextPage } }
+  //   GET /learn/api/v1/courses/{courseId}/gradebook/columns?...
+  //       -> { results: [{ id, columnName, dueDate, possible, contentId,
+  //              scorable, visible, deleted, calculationType,
+  //              scoreProviderHandle }] }
+  //   GET /learn/api/v1/courses/{courseId}/gradebook/grades?userId={id}&limit=100
+  //       -> { results: [{ columnId, status: "NEEDS_GRADING"|"GRADED"|null,
+  //              isExempt, effectiveScore, lastAttemptId }] }
+  //
+  // A column is "active" when it has a due date, is a real scorable content
+  // item, and the user's grade row (if any) shows no submission or score yet.
   //
   // Ultra pages carry a <base> tag pointing at a CDN, so every URL here is
-  // built from location.origin rather than left relative.
+  // built from location.origin rather than left relative. Internal API calls
+  // also need the X-Blackboard-XSRF header, which is read from the page.
   // ---------------------------------------------------------------------------
   const DataSource = {
     origin: location.origin,
-    maxStreamRounds: 5,
+    maxCourses: 25,          // safety cap on how many courses to query
+    concurrency: 4,          // parallel course fetches
     _xsrf: null,
     _userId: null,
 
-    // Ultra's internal API rejects requests without X-Blackboard-XSRF. The
-    // token is embedded in the page HTML as  xsrf: "<uuid>"  and sometimes in
-    // the BbRouter cookie. Try cheap sources first, then refetch the page.
+    // Token lives in the page HTML as  xsrf: "<uuid>"  and sometimes in the
+    // BbRouter cookie. Try cheap sources first, then refetch the page.
     async xsrfToken() {
       if (this._xsrf) return this._xsrf;
       const re = /xsrf:\s*"?([0-9a-f]{8}-[0-9a-f-]{27})"?/i;
@@ -86,21 +92,17 @@
       return this._xsrf;
     },
 
-    async getJson(path, opts) {
+    async getJson(path) {
       const xsrf = await this.xsrfToken();
       const res = await fetch(this.origin + path, {
         credentials: 'include',
-        method: (opts && opts.method) || 'GET',
-        headers: {
-          Accept: 'application/json, text/plain, */*',
-          'Content-Type': 'application/json',
-          'X-Blackboard-XSRF': xsrf,
-        },
-        body: opts && opts.body ? JSON.stringify(opts.body) : undefined,
+        headers: { Accept: 'application/json, text/plain, */*', 'X-Blackboard-XSRF': xsrf },
       });
       if (res.status === 401 || res.status === 403) {
         this._xsrf = null; // token may have rotated; refetch next time
-        throw new Error('Not signed in to Blackboard (HTTP ' + res.status + ')');
+        const err = new Error('Not signed in to Blackboard (HTTP ' + res.status + ')');
+        err.status = res.status;
+        throw err;
       }
       if (!res.ok) throw new Error('Blackboard returned HTTP ' + res.status + ' for ' + path);
       try { return await res.json(); } catch (e) { throw new Error('Response was not JSON for ' + path); }
@@ -114,99 +116,118 @@
       return me.id;
     },
 
-    // courseId -> { name, available }
+    // Courses the user can currently access: [{ id, name }]
     async fetchCourses() {
       const uid = await this.userId();
-      const courses = new Map();
+      const now = Date.now();
+      const courses = [];
       let path = '/learn/api/v1/users/' + encodeURIComponent(uid) +
-        '/memberships?expand=course.effectiveAvailability&includeCount=true&limit=200';
+        '/memberships?expand=course.effectiveAvailability,course.permissions,courseRole&includeCount=true&limit=200';
       for (let page = 0; page < 10 && path; page++) {
         const data = await this.getJson(path);
         const results = (data && Array.isArray(data.results)) ? data.results : [];
         results.forEach((m) => {
           const c = m && m.course;
           if (!c || typeof c.id !== 'string') return;
-          courses.set(c.id, {
-            name: c.displayName || c.name || c.courseId || c.id,
-            available: c.effectiveAvailability !== false && c.isClosed !== true,
-          });
+          if (c.effectiveAvailability === false || c.isClosed === true) return;
+          if (m.isAvailable === false) return;
+          const termEnd = c.term && c.term.endDate ? Date.parse(c.term.endDate) : NaN;
+          if (!Number.isNaN(termEnd) && termEnd < now) return;
+          courses.push({ id: c.id, name: c.displayName || c.name || c.courseId || c.id });
         });
         const next = data && data.paging && data.paging.nextPage;
         path = (typeof next === 'string' && next && results.length) ? next : null;
       }
-      return courses;
+      return courses.slice(0, this.maxCourses);
     },
 
-    // The stream endpoint is a handshake: the first POST usually returns no
-    // entries plus provider cursors; re-POSTing with those cursors returns the
-    // real entries. Loop until sv_moreData is false or we hit the round cap.
-    async fetchStream() {
-      let body = { providers: {}, forOverview: false, retrieveOnly: true, flushCache: false };
-      let entries = [];
-      for (let round = 0; round < this.maxStreamRounds; round++) {
-        const data = await this.getJson('/learn/api/v1/streams/ultra', { method: 'POST', body });
-        if (!data || typeof data !== 'object') throw new Error('Stream response malformed');
-        entries = entries.concat(Array.isArray(data.sv_streamEntries) ? data.sv_streamEntries : []);
-        if (!data.sv_moreData) break;
-        const providers = {};
-        (Array.isArray(data.sv_providers) ? data.sv_providers : []).forEach((p) => {
-          if (p && p.sp_provider) {
-            providers[p.sp_provider] = { sp_oldest: p.sp_oldest, sp_newest: p.sp_newest, sp_refreshDate: p.sp_refreshDate };
-          }
-        });
-        body = { providers, forOverview: false, retrieveOnly: true, flushCache: false };
-      }
-      return entries;
+    async fetchCourseGradebook(course, uid) {
+      const q = 'isExcludedFromCourseUserActivity=true';
+      const [cols, grades] = await Promise.all([
+        this.getJson('/learn/api/v1/courses/' + course.id + '/gradebook/columns?' + q +
+          '&expand=collectExternalSubmissions&includeInvisible=false'),
+        this.getJson('/learn/api/v1/courses/' + course.id + '/gradebook/grades?' + q +
+          '&limit=100&userId=' + encodeURIComponent(uid)),
+      ]);
+      return {
+        columns: (cols && Array.isArray(cols.results)) ? cols.results : [],
+        grades: (grades && Array.isArray(grades.results)) ? grades.results : [],
+      };
     },
 
-    // Best-effort deep link into Ultra for a stream entry.
-    itemUrl(courseId, contentId, handler) {
-      const base = this.origin + '/ultra/courses/' + courseId + '/outline';
-      if (!contentId) return base;
-      if (handler === 'resource/x-bb-asmt-test-link') {
+    itemUrl(courseId, contentId, handle) {
+      const base = this.origin + '/ultra/courses/' + courseId;
+      if (!contentId) return base + '/grades';
+      if (handle === 'resource/x-bb-assessment' || handle === 'resource/x-bb-asmt-test-link') {
         return base + '/assessment/' + contentId + '/overview?courseId=' + courseId;
       }
-      return base + '/edit/document/' + contentId + '?courseId=' + courseId + '&view=content';
+      if (handle === 'resource/x-bb-forumlink' || handle === 'resource/x-bb-discussion') {
+        return base + '/discussion/' + contentId + '?view=discussions';
+      }
+      return base + '/grades';
     },
 
-    // Turn raw stream entries + course map into normalized items. Skips
-    // anything it can't read instead of throwing.
-    parse(entries, courses) {
-      const out = new Map();
-      (Array.isArray(entries) ? entries : []).forEach((e) => {
+    // Grade rows that mean "this is already handled".
+    DONE_STATUSES: { NEEDS_GRADING: true, GRADED: true, COMPLETED: true },
+
+    parseCourse(course, gb) {
+      const byColumn = new Map();
+      gb.grades.forEach((g) => { if (g && g.columnId) byColumn.set(g.columnId, g); });
+      const out = [];
+      gb.columns.forEach((c) => {
         try {
-          if (!e || e.providerId !== 'bb-nautilus') return;
-          const isd = e.itemSpecificData || {};
-          const nd = isd.notificationDetails || {};
-          if (!nd.dueDate) return;
-          const dueAt = new Date(nd.dueDate);
+          if (!c || typeof c.id !== 'string' || !c.dueDate) return;
+          if (c.deleted === true || c.scorable === false || c.visible === false) return;
+          if (c.calculationType && c.calculationType !== 'NON_CALCULATED') return;
+          if (!c.contentId) return; // manual gradebook-only column, nothing to submit
+          const dueAt = new Date(c.dueDate);
           if (Number.isNaN(dueAt.getTime())) return;
-          const courseId = nd.courseId || e.se_courseId;
-          if (!courseId) return;
-          const course = courses.get(courseId);
-          if (course && !course.available) return;
-          const contentId = isd.courseContentId || null;
-          const id = String(contentId || nd.sourceId || e.se_id);
-          const handler = (isd.contentDetails && isd.contentDetails.contentHandler) || '';
-          const item = {
-            id,
-            name: isd.title || '(untitled)',
-            courseId,
-            courseName: course ? course.name : courseId,
+          const g = byColumn.get(c.id);
+          if (g) {
+            if (g.isExempt === true) return;
+            if (g.status && this.DONE_STATUSES[g.status]) return;
+            if (g.effectiveScore !== undefined && g.effectiveScore !== null) return;
+          }
+          const points = typeof c.possible === 'number' ? c.possible : null;
+          out.push({
+            id: c.id,
+            name: c.columnDisplayName || c.effectiveColumnName || c.columnName || '(untitled)',
+            courseId: course.id,
+            courseName: course.name,
             dueAt,
-            points: null, // stream has no points; filled in once gradebook data is wired
-            url: this.itemUrl(courseId, contentId, handler),
-          };
-          // UA_AVAIL and DUE events can describe the same item; keep the first.
-          if (!out.has(id)) out.set(id, item);
-        } catch (err) { /* skip unreadable entry */ }
+            points,
+            url: this.itemUrl(course.id, c.contentId, c.scoreProviderHandle),
+          });
+        } catch (err) { /* skip unreadable column */ }
       });
-      return [...out.values()];
+      return out;
     },
 
     async fetchAssignments() {
-      const [courses, entries] = await Promise.all([this.fetchCourses(), this.fetchStream()]);
-      return this.parse(entries, courses);
+      const uid = await this.userId();
+      const courses = await this.fetchCourses();
+      if (courses.length === 0) return [];
+      const items = [];
+      let failures = 0;
+      let lastErr = null;
+      const queue = courses.slice();
+      const worker = async () => {
+        while (queue.length) {
+          const course = queue.shift();
+          try {
+            const gb = await this.fetchCourseGradebook(course, uid);
+            items.push(...this.parseCourse(course, gb));
+          } catch (e) {
+            failures++;
+            lastErr = e;
+            if (e && (e.status === 401)) throw e; // session gone, stop everything
+            console.warn('[Blackboard TaskBar] skipping course ' + course.id + ':', e);
+          }
+        }
+      };
+      await Promise.all(Array.from({ length: Math.min(this.concurrency, courses.length) }, worker));
+      if (failures === courses.length && lastErr) throw lastErr;
+      return items;
     },
   };
 

@@ -4,11 +4,11 @@ A Tampermonkey userscript that adds a simple assignment to-do sidebar to Blackbo
 
 **License:** [PolyForm Noncommercial 1.0.0](LICENSE) — free for personal/noncommercial use, no reselling.
 
-> **Status:** v0.2 beta. Pulls assignments from Blackboard's activity stream. Points possible and automatic hiding of already-submitted work are not wired yet; you can check items off manually in the meantime.
+> **Status:** v0.3 beta. Reads your gradebook in each current course, so items you have already submitted or that have been graded drop off automatically. Tested on one Ultra site so far.
 
 ## What it does
 
-- Shows a collapsible panel (top-right) on Blackboard pages listing every active, unsubmitted assignment that has a due date.
+- Shows a collapsible panel (top-right) on Blackboard pages listing every unsubmitted assignment, quiz, or graded discussion that has a due date, across all your current courses.
 - Each item shows the assignment name, course, due date/time, points possible, and a link to open it.
 - Groups items by due date: **Overdue / Today / Tomorrow / This Week / Later**, sorted by due date within each group.
 - Filter by course with a dropdown.
