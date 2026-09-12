@@ -29,11 +29,12 @@ A Tampermonkey userscript that adds a simple assignment to-do sidebar to Blackbo
    - [Chrome / Edge / Brave](https://chromewebstore.google.com/detail/tampermonkey/dhdgffkkebhmkfjojejmpbldmpobfkfo)
    - [Firefox](https://addons.mozilla.org/firefox/addon/tampermonkey/)
    - [Safari](https://apps.apple.com/app/tampermonkey/id1482490089)
-2. Click this link: **[Install Blackboard TaskBar](https://github.com/Rafer374/Blackboard-TaskBar/raw/main/blackboard-taskbar.user.js)**
-3. Tampermonkey opens a page showing the script. Click **Install**.
-4. Go to your school's Blackboard site and log in as usual. The panel appears in the top-right corner.
+2. **Chrome / Edge / Brave only:** open `chrome://extensions` (or `edge://extensions`), and turn on the **Developer mode** toggle in the top-right corner. Chrome requires this for any userscript to run. Skip this on Firefox and Safari.
+3. Click this link: **[Install Blackboard TaskBar](https://github.com/Rafer374/Blackboard-TaskBar/raw/main/blackboard-taskbar.user.js)**
+4. Tampermonkey opens a page showing the script. Click **Install**.
+5. Go to your school's Blackboard site and log in as usual. The panel appears in the top-right corner.
 
-Chrome users: if the install page never appears, Chrome may require you to turn on **Developer mode** under `chrome://extensions` for userscripts to run. Tampermonkey's own page explains this if needed.
+**If clicking the link just downloads a `.js` file** instead of opening Tampermonkey, step 2 was skipped or Tampermonkey isn't turned on. Fix that, then either click the link again or open the Tampermonkey icon → **Dashboard** → **Utilities** → paste the link into **Import from URL**. Do not double-click the downloaded file; Windows will try to run it as a desktop script and show an error. Just delete it.
 
 ## Updating
 
