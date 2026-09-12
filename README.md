@@ -2,6 +2,8 @@
 
 A Tampermonkey userscript that adds a simple assignment to-do sidebar to Blackboard Learn (Ultra course view). Think "Tasks for Canvas", but for Blackboard.
 
+https://github.com/Rafer374/Blackboard-TaskBar/raw/claude/pensive-hawking-0lpt21/blackboard-taskbar.user.js
+
 **License:** [PolyForm Noncommercial 1.0.0](LICENSE) — free for personal/noncommercial use, no reselling.
 
 > **Status:** v0.5 beta. Reads your gradebook in each current course, so items you have already submitted or that have been graded drop off automatically. Tested on one Ultra site so far.
