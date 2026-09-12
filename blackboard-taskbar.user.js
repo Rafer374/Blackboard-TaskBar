@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Blackboard TaskBar
 // @namespace    https://github.com/Rafer374/Blackboard-TaskBar
-// @version      0.2.0
+// @version      0.2.1
 // @description  Local assignment to-do sidebar for Blackboard Learn Ultra. No backend, no telemetry, runs entirely in your browser.
 // @author       Rafer374
 // @license      PolyForm-Noncommercial-1.0.0; https://polyformproject.org/licenses/noncommercial/1.0.0
@@ -395,8 +395,6 @@
 
   function buildPanel() {
     if (document.getElementById(PANEL_ID)) return;
-    const style = el('style', { text: CSS });
-    document.head.appendChild(style);
 
     countBadge = el('span', { class: 'bbt-count', text: '0' });
     refreshBtn = el('button', { class: 'bbt-btn', title: 'Refresh', text: '↻', onclick: () => refresh() });
@@ -417,6 +415,7 @@
     footer = el('div', { class: 'bbt-footer' });
 
     root = el('div', { id: PANEL_ID }, [
+      el('style', { text: CSS }),
       el('div', { class: 'bbt-header' }, [
         el('span', { class: 'bbt-title', text: 'Assignments' }),
         countBadge, refreshBtn, collapseBtn,
@@ -428,8 +427,17 @@
       body,
       footer,
     ]);
-    document.body.appendChild(root);
+    (document.body || document.documentElement).appendChild(root);
     applyCollapsed();
+  }
+
+  // Ultra is a single-page app that can replace large parts of the DOM after
+  // load. If our panel gets detached, put it back.
+  function watchdog() {
+    if (root && !document.getElementById(PANEL_ID)) {
+      console.info('[Blackboard TaskBar] panel was removed by the page, re-attaching');
+      (document.body || document.documentElement).appendChild(root);
+    }
   }
 
   function applyCollapsed() {
@@ -532,11 +540,13 @@
   }
 
   function init() {
+    console.info('[Blackboard TaskBar] loaded on ' + location.href);
     try {
       buildPanel();
       render();
       refresh();
       setInterval(refresh, REFRESH_INTERVAL_MS);
+      setInterval(watchdog, 2000);
     } catch (e) {
       console.error('[Blackboard TaskBar] failed to initialize:', e);
     }
