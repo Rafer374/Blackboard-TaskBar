@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Blackboard TaskBar
 // @namespace    https://github.com/Rafer374/Blackboard-TaskBar
-// @version      0.1.0
+// @version      0.2.0
 // @description  Local assignment to-do sidebar for Blackboard Learn Ultra. No backend, no telemetry, runs entirely in your browser.
 // @author       Rafer374
 // @license      PolyForm-Noncommercial-1.0.0; https://polyformproject.org/licenses/noncommercial/1.0.0
@@ -38,52 +38,175 @@
   // ---------------------------------------------------------------------------
   // Data source adapter
   //
-  // Everything Blackboard-specific lives here. fetchAssignments() must resolve
-  // to an array of normalized items:
+  // Everything Blackboard-specific lives here. fetchAssignments() resolves to
+  // an array of normalized items:
   //   { id: string, name: string, courseName: string, courseId: string,
   //     dueAt: Date, points: number|null, url: string }
-  // Only items with a due date and no submission/grade should be returned.
   //
-  // PENDING: endpoint + parse() are filled in from a real captured response.
-  // Until then fetchAssignments() throws, which the UI reports as
-  // "couldn't load assignments" rather than breaking the page.
+  // Schema below was taken from real captured responses on an Ultra site:
+  //   GET  /learn/api/v1/users/me                      -> { id: "_123_1", ... }
+  //   GET  /learn/api/v1/users/{id}/memberships?expand=course
+  //        -> { results: [{ courseId, course: { id, name, displayName,
+  //                          effectiveAvailability, isClosed } }], paging }
+  //   POST /learn/api/v1/streams/ultra  (2-step handshake, see fetchStream)
+  //        -> { sv_streamEntries: [{ providerId, se_id, se_courseId,
+  //               itemSpecificData: { title, courseContentId,
+  //                 contentDetails: { contentHandler },
+  //                 notificationDetails: { courseId, dueDate, sourceType,
+  //                                        sourceId, gradebookCategoryName } },
+  //               extraAttribs: { event_type } }],
+  //             sv_providers: [{ sp_provider, sp_oldest, sp_newest, sp_refreshDate }],
+  //             sv_moreData }
+  //
+  // Ultra pages carry a <base> tag pointing at a CDN, so every URL here is
+  // built from location.origin rather than left relative.
   // ---------------------------------------------------------------------------
   const DataSource = {
-    // e.g. '/learn/api/v1/...'; null = not configured yet
-    endpoint: null,
+    origin: location.origin,
+    maxStreamRounds: 5,
+    _xsrf: null,
+    _userId: null,
 
-    async fetchAssignments() {
-      if (!this.endpoint) {
-        throw new Error('Data source not configured (endpoint is null)');
+    // Ultra's internal API rejects requests without X-Blackboard-XSRF. The
+    // token is embedded in the page HTML as  xsrf: "<uuid>"  and sometimes in
+    // the BbRouter cookie. Try cheap sources first, then refetch the page.
+    async xsrfToken() {
+      if (this._xsrf) return this._xsrf;
+      const re = /xsrf:\s*"?([0-9a-f]{8}-[0-9a-f-]{27})"?/i;
+      let m = null;
+      try { m = document.cookie.match(/BbRouter=([^;]+)/); m = m && m[1].match(re); } catch (e) { /* ignore */ }
+      if (!m) { try { m = document.documentElement.innerHTML.match(re); } catch (e) { /* ignore */ } }
+      if (!m) {
+        try {
+          const res = await fetch(this.origin + '/ultra/institution-page', { credentials: 'include' });
+          if (res.ok) m = (await res.text()).match(re);
+        } catch (e) { /* ignore */ }
       }
-      const res = await fetch(this.endpoint, {
-        credentials: 'include',
-        headers: { Accept: 'application/json' },
-      });
-      if (res.status === 401 || res.status === 403) {
-        throw new Error('Not signed in to Blackboard (HTTP ' + res.status + ')');
-      }
-      if (!res.ok) {
-        throw new Error('Blackboard returned HTTP ' + res.status);
-      }
-      let json;
-      try {
-        json = await res.json();
-      } catch (e) {
-        throw new Error('Response was not JSON');
-      }
-      const items = this.parse(json);
-      if (!Array.isArray(items)) {
-        throw new Error('Parser did not return a list');
-      }
-      return items;
+      this._xsrf = m ? m[1] : '';
+      return this._xsrf;
     },
 
-    // Turn the raw endpoint JSON into normalized items. Filled in after
-    // inspecting a real response; must never throw on unexpected shapes,
-    // just skip what it can't read.
-    parse(_json) {
-      throw new Error('Parser not implemented');
+    async getJson(path, opts) {
+      const xsrf = await this.xsrfToken();
+      const res = await fetch(this.origin + path, {
+        credentials: 'include',
+        method: (opts && opts.method) || 'GET',
+        headers: {
+          Accept: 'application/json, text/plain, */*',
+          'Content-Type': 'application/json',
+          'X-Blackboard-XSRF': xsrf,
+        },
+        body: opts && opts.body ? JSON.stringify(opts.body) : undefined,
+      });
+      if (res.status === 401 || res.status === 403) {
+        this._xsrf = null; // token may have rotated; refetch next time
+        throw new Error('Not signed in to Blackboard (HTTP ' + res.status + ')');
+      }
+      if (!res.ok) throw new Error('Blackboard returned HTTP ' + res.status + ' for ' + path);
+      try { return await res.json(); } catch (e) { throw new Error('Response was not JSON for ' + path); }
+    },
+
+    async userId() {
+      if (this._userId) return this._userId;
+      const me = await this.getJson('/learn/api/v1/users/me');
+      if (!me || typeof me.id !== 'string') throw new Error('Could not read user id');
+      this._userId = me.id;
+      return me.id;
+    },
+
+    // courseId -> { name, available }
+    async fetchCourses() {
+      const uid = await this.userId();
+      const courses = new Map();
+      let path = '/learn/api/v1/users/' + encodeURIComponent(uid) +
+        '/memberships?expand=course.effectiveAvailability&includeCount=true&limit=200';
+      for (let page = 0; page < 10 && path; page++) {
+        const data = await this.getJson(path);
+        const results = (data && Array.isArray(data.results)) ? data.results : [];
+        results.forEach((m) => {
+          const c = m && m.course;
+          if (!c || typeof c.id !== 'string') return;
+          courses.set(c.id, {
+            name: c.displayName || c.name || c.courseId || c.id,
+            available: c.effectiveAvailability !== false && c.isClosed !== true,
+          });
+        });
+        const next = data && data.paging && data.paging.nextPage;
+        path = (typeof next === 'string' && next && results.length) ? next : null;
+      }
+      return courses;
+    },
+
+    // The stream endpoint is a handshake: the first POST usually returns no
+    // entries plus provider cursors; re-POSTing with those cursors returns the
+    // real entries. Loop until sv_moreData is false or we hit the round cap.
+    async fetchStream() {
+      let body = { providers: {}, forOverview: false, retrieveOnly: true, flushCache: false };
+      let entries = [];
+      for (let round = 0; round < this.maxStreamRounds; round++) {
+        const data = await this.getJson('/learn/api/v1/streams/ultra', { method: 'POST', body });
+        if (!data || typeof data !== 'object') throw new Error('Stream response malformed');
+        entries = entries.concat(Array.isArray(data.sv_streamEntries) ? data.sv_streamEntries : []);
+        if (!data.sv_moreData) break;
+        const providers = {};
+        (Array.isArray(data.sv_providers) ? data.sv_providers : []).forEach((p) => {
+          if (p && p.sp_provider) {
+            providers[p.sp_provider] = { sp_oldest: p.sp_oldest, sp_newest: p.sp_newest, sp_refreshDate: p.sp_refreshDate };
+          }
+        });
+        body = { providers, forOverview: false, retrieveOnly: true, flushCache: false };
+      }
+      return entries;
+    },
+
+    // Best-effort deep link into Ultra for a stream entry.
+    itemUrl(courseId, contentId, handler) {
+      const base = this.origin + '/ultra/courses/' + courseId + '/outline';
+      if (!contentId) return base;
+      if (handler === 'resource/x-bb-asmt-test-link') {
+        return base + '/assessment/' + contentId + '/overview?courseId=' + courseId;
+      }
+      return base + '/edit/document/' + contentId + '?courseId=' + courseId + '&view=content';
+    },
+
+    // Turn raw stream entries + course map into normalized items. Skips
+    // anything it can't read instead of throwing.
+    parse(entries, courses) {
+      const out = new Map();
+      (Array.isArray(entries) ? entries : []).forEach((e) => {
+        try {
+          if (!e || e.providerId !== 'bb-nautilus') return;
+          const isd = e.itemSpecificData || {};
+          const nd = isd.notificationDetails || {};
+          if (!nd.dueDate) return;
+          const dueAt = new Date(nd.dueDate);
+          if (Number.isNaN(dueAt.getTime())) return;
+          const courseId = nd.courseId || e.se_courseId;
+          if (!courseId) return;
+          const course = courses.get(courseId);
+          if (course && !course.available) return;
+          const contentId = isd.courseContentId || null;
+          const id = String(contentId || nd.sourceId || e.se_id);
+          const handler = (isd.contentDetails && isd.contentDetails.contentHandler) || '';
+          const item = {
+            id,
+            name: isd.title || '(untitled)',
+            courseId,
+            courseName: course ? course.name : courseId,
+            dueAt,
+            points: null, // stream has no points; filled in once gradebook data is wired
+            url: this.itemUrl(courseId, contentId, handler),
+          };
+          // UA_AVAIL and DUE events can describe the same item; keep the first.
+          if (!out.has(id)) out.set(id, item);
+        } catch (err) { /* skip unreadable entry */ }
+      });
+      return [...out.values()];
+    },
+
+    async fetchAssignments() {
+      const [courses, entries] = await Promise.all([this.fetchCourses(), this.fetchStream()]);
+      return this.parse(entries, courses);
     },
   };
 

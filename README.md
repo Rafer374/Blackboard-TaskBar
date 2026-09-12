@@ -4,7 +4,7 @@ A Tampermonkey userscript that adds a simple assignment to-do sidebar to Blackbo
 
 **License:** [PolyForm Noncommercial 1.0.0](LICENSE) — free for personal/noncommercial use, no reselling.
 
-> **Status:** v0.1 scaffold. The panel, buckets, filters, and local storage are done. The Blackboard data adapter is still being wired to a real API response, so the panel currently shows "couldn't load assignments" until that lands.
+> **Status:** v0.2 beta. Pulls assignments from Blackboard's activity stream. Points possible and automatic hiding of already-submitted work are not wired yet; you can check items off manually in the meantime.
 
 ## What it does
 
