@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Blackboard TaskBar
 // @namespace    https://github.com/Rafer374/Blackboard-TaskBar
-// @version      0.5.0
+// @version      0.6.0
 // @description  Local assignment to-do sidebar for Blackboard Learn Ultra. No backend, no telemetry, runs entirely in your browser.
 // @author       Rafer374
 // @license      PolyForm-Noncommercial-1.0.0; https://polyformproject.org/licenses/noncommercial/1.0.0
@@ -33,6 +33,7 @@
   const REFRESH_INTERVAL_MS = 10 * 60 * 1000; // refetch every 10 minutes
   const THIS_WEEK_DAYS = 7;                   // List view: "This Week" = due within N days
   const WEEK_STARTS_ON = 0;                   // Week view: 0 = Sunday, 1 = Monday
+  const MAX_ATTEMPT_CHECKS = 40;              // cap on per-attempt submission checks
   const STORAGE_KEY = 'bbTaskbar.v1';
   const PANEL_ID = 'bb-taskbar-root';
 
@@ -172,6 +173,13 @@
     // Grade-row statuses that mean the student has already turned it in.
     SUBMITTED_STATUSES: { NEEDS_GRADING: 'Submitted', GRADED: 'Graded', COMPLETED: 'Completed' },
 
+    // Attempt statuses that mean "opened or saved, but never turned in".
+    // A grade row can say NEEDS_GRADING while the attempt behind it is still a
+    // draft, so an ungraded attempt is confirmed against the attempt itself.
+    UNSUBMITTED_ATTEMPT_STATUSES: {
+      IN_PROGRESS: 1, IN_PROGRESS_AGAIN: 1, NOT_ATTEMPTED: 1, SUSPENDED: 1, DRAFT: 1, CANCELED: 1,
+    },
+
     parseCourse(course, gb) {
       const byColumn = new Map();
       gb.grades.forEach((g) => { if (g && g.columnId) byColumn.set(g.columnId, g); });
@@ -185,11 +193,21 @@
           const dueAt = new Date(c.dueDate);
           if (Number.isNaN(dueAt.getTime())) return;
           const g = byColumn.get(c.id);
-          let status = null; // null = still open; otherwise a short label
+          let status = null;   // null = still open; otherwise a short label
+          let verify = null;   // attempt to confirm before trusting the row
           if (g) {
             if (g.isExempt === true) return; // not a task for this student
-            if (g.status && this.SUBMITTED_STATUSES[g.status]) status = this.SUBMITTED_STATUSES[g.status];
-            else if (g.effectiveScore !== undefined && g.effectiveScore !== null) status = 'Graded';
+            const scored = g.effectiveScore !== undefined && g.effectiveScore !== null;
+            const attemptId = g.lastAttemptId || g.firstAttemptId || null;
+            if (scored) {
+              status = 'Graded'; // a score exists, so it was definitely turned in
+            } else if (g.status && this.SUBMITTED_STATUSES[g.status]) {
+              // No score yet. Only an actual attempt counts as turned in, and
+              // whether that attempt was submitted is checked below.
+              if (!attemptId) return;
+              status = this.SUBMITTED_STATUSES[g.status];
+              verify = { attemptId, columnId: c.id };
+            }
           }
           const points = typeof c.possible === 'number' ? c.possible : null;
           out.push({
@@ -201,11 +219,41 @@
             points,
             submitted: status !== null,
             status,
+            note: null,
+            verify,
             url: this.itemUrl(course.id, c.contentId, c.scoreProviderHandle),
           });
         } catch (err) { /* skip unreadable column */ }
       });
       return out;
+    },
+
+    // Confirm the ungraded attempts. Blackboard's own attempt record carries
+    // the real state: a submitted attempt has a submission timestamp
+    // (attemptDate) and a submitted status; a saved draft does not. Anything
+    // that fails to load keeps whatever the grade row said.
+    async verifyAttempts(list) {
+      const queue = list.slice(0, MAX_ATTEMPT_CHECKS);
+      const worker = async () => {
+        while (queue.length) {
+          const it = queue.shift();
+          const v = it.verify;
+          try {
+            const a = await this.getJson('/learn/api/v1/courses/' + it.courseId +
+              '/gradebook/attempts/' + encodeURIComponent(v.attemptId) +
+              '?columnId=' + encodeURIComponent(v.columnId));
+            const turnedIn = !!(a && a.attemptDate) && !this.UNSUBMITTED_ATTEMPT_STATUSES[a && a.status];
+            if (!turnedIn) {
+              it.submitted = false;
+              it.status = null;
+              it.note = 'Draft started';
+            }
+          } catch (e) {
+            console.warn('[Blackboard TaskBar] could not verify attempt ' + v.attemptId + ':', e);
+          }
+        }
+      };
+      await Promise.all(Array.from({ length: Math.min(this.concurrency, queue.length) }, worker));
     },
 
     async fetchAssignments() {
@@ -232,6 +280,8 @@
       };
       await Promise.all(Array.from({ length: Math.min(this.concurrency, courses.length) }, worker));
       if (failures === courses.length && lastErr) throw lastErr;
+      await this.verifyAttempts(items.filter((it) => it.verify));
+      items.forEach((it) => { delete it.verify; });
       return items;
     },
   };
@@ -508,6 +558,10 @@
       background: #e6f2ea; color: #1d6b3a; border-radius: 3px; padding: 0 5px;
       font-size: 11px; font-weight: 600;
     }
+    .bbt-item-note {
+      background: #fdf0d9; color: #8a5a00; border-radius: 3px; padding: 0 5px;
+      font-size: 11px; font-weight: 600;
+    }
     .bbt-empty, .bbt-error { padding: 14px 10px; color: #666; text-align: center; }
     .bbt-error { color: #b00020; }
     .bbt-footer {
@@ -661,6 +715,7 @@
     const pts = fmtPoints(it.points);
     if (pts) meta.push(el('span', { text: pts }));
     if (it.submitted) meta.push(el('span', { class: 'bbt-item-status', text: it.status }));
+    else if (it.note) meta.push(el('span', { class: 'bbt-item-note', title: 'Started but not submitted', text: it.note }));
     return el('div', { class: 'bbt-item' + (done ? ' bbt-done' : '') }, [
       cb,
       el('div', { class: 'bbt-item-main' }, [
@@ -724,6 +779,7 @@
     progressBox.textContent = '';
     progressBox.appendChild(svg);
     progressBox.appendChild(legend);
+    return prog;
   }
 
   function render() {
@@ -734,11 +790,8 @@
 
     const now = new Date();
     const visible = filteredItems();
-    const openCount = items.filter((it) => !isDone(it)).length;
-    countBadge.textContent = String(openCount);
-    tabBadge.textContent = String(openCount);
 
-    let groups, emptyMsg, timeOnly = false;
+    let groups, emptyMsg, timeOnly = false, prog = null, progLabel = '';
     if (state.view === 'week') {
       const weekStart = addDays(startOfWeek(now), 7 * weekOffset);
       const weekEnd = addDays(weekStart, 7);
@@ -749,14 +802,26 @@
       groups = groupByDay(visible.filter((it) => it.dueAt >= weekStart && it.dueAt < weekEnd), weekStart);
       emptyMsg = 'Nothing due this week.';
       timeOnly = true;
-      renderProgress(weekStart, weekEnd, weekOffset === 0 ? 'This week' : fmtWeekRange(weekStart));
+      progLabel = weekOffset === 0 ? 'this week' : fmtWeekRange(weekStart);
+      prog = renderProgress(weekStart, weekEnd, weekOffset === 0 ? 'This week' : fmtWeekRange(weekStart));
     } else {
       weekNav.style.display = 'none';
       groups = groupByBucket(visible, now);
       emptyMsg = items.length && !visible.length ? 'All caught up. 🎉' : 'Nothing due. 🎉';
       const ws = startOfWeek(now);
-      renderProgress(ws, addDays(ws, 7), 'This week');
+      progLabel = 'this week';
+      prog = renderProgress(ws, addDays(ws, 7), 'This week');
     }
+
+    // The badge counts what is still left in the week being shown, not the
+    // whole term, so the collapsed tab answers "what do I owe this week?".
+    const weekLeft = prog ? prog.total - prog.done : 0;
+    countBadge.textContent = String(weekLeft);
+    tabBadge.textContent = String(weekLeft);
+    const badgeTitle = weekLeft + (weekLeft === 1 ? ' assignment' : ' assignments') + ' left ' +
+      (progLabel === 'this week' ? 'this week' : 'in ' + progLabel);
+    countBadge.setAttribute('title', badgeTitle);
+    tabBadge.setAttribute('title', badgeTitle);
 
     body.textContent = '';
     if (lastError && items.length === 0) {
