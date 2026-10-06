@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Blackboard TaskBar
 // @namespace    https://github.com/Rafer374/Blackboard-TaskBar
-// @version      0.7.0
+// @version      0.7.1
 // @description  Local assignment to-do sidebar for Blackboard Learn Ultra. No backend, no telemetry, runs entirely in your browser.
 // @author       Rafer374
 // @license      PolyForm-Noncommercial-1.0.0; https://polyformproject.org/licenses/noncommercial/1.0.0
@@ -34,6 +34,7 @@
   const THIS_WEEK_DAYS = 7;                   // List view: "This Week" = due within N days
   const WEEK_STARTS_ON = 0;                   // Week view: 0 = Sunday, 1 = Monday
   const MAX_ATTEMPT_CHECKS = 40;              // cap on per-attempt submission checks
+  const RING_HOVER_DELAY_MS = 600;            // dwell before a ring takes over the readout
   const STORAGE_KEY = 'bbTaskbar.v1';
   const PANEL_ID = 'bb-taskbar-root';
 
@@ -531,7 +532,7 @@
       padding: 8px 10px; border-bottom: 1px solid #e5e5e5;
     }
     .bbt-progress svg { flex-shrink: 0; display: block; }
-    .bbt-ring-track { fill: none; stroke: #ececec; }
+    .bbt-ring-track { fill: none; stroke-opacity: 0.18; }
     .bbt-ring-center { fill: #fff; }
     .bbt-ring-fill { fill: none; stroke-linecap: round; transform: rotate(-90deg); transform-origin: 50% 50%; }
     .bbt-ring-pct { font-size: 16px; font-weight: 700; fill: #222; }
@@ -762,7 +763,9 @@
   // every course always gets a ring, however many there are. Each ring carries
   // an invisible wider stroke to hover, and hovering a ring (or its legend row)
   // retargets the center readout to that course.
+  let ringHoverTimer = null;
   function renderProgress(start, end, label) {
+    clearTimeout(ringHoverTimer);
     const prog = weekProgress(start, end);
     const slots = courseSlots();
     const rings = prog.courses
@@ -770,10 +773,17 @@
       .sort((a, b) => a.slot.index - b.slot.index);
 
     const size = 128, cx = size / 2, cy = size / 2;
-    const BAND_OUTER = 48, BAND_INNER = 24; // where the per-course rings sit
+    // Per-course rings live in this band; BAND_INNER is far enough in that the
+    // readout in the middle never sits on top of a ring.
+    const BAND_OUTER = 50, BAND_INNER = 27;
+    const ALL_W = 7; // the outer week ring is the heaviest mark
     const n = rings.length;
     const step = n > 1 ? Math.min(7, (BAND_OUTER - BAND_INNER) / (n - 1)) : 7;
     const courseW = Math.max(2.5, Math.min(5, step - 2));
+    const gap = step - courseW;
+    // The week ring sits exactly one gap outside the band, so every gap in the
+    // chart is the same width and nothing reads as a missing ring.
+    const rAll = BAND_OUTER + courseW / 2 + gap + ALL_W / 2;
 
     const svg = svgEl('svg', {
       width: size, height: size, viewBox: '0 0 ' + size + ' ' + size, role: 'img',
@@ -781,7 +791,7 @@
     });
 
     const specs = [{
-      key: '', r: 59, w: 7, color: '#2b5797', hit: 11,
+      key: '', r: rAll, w: ALL_W, color: '#2b5797', hit: ALL_W + gap,
       done: prog.done, total: prog.total, label: 'Week', full: label,
     }];
     rings.forEach((c, i) => specs.push({
@@ -792,7 +802,7 @@
 
     specs.forEach((rs) => {
       const circ = 2 * Math.PI * rs.r;
-      rs.track = svgEl('circle', { class: 'bbt-ring-track', cx, cy, r: rs.r, 'stroke-width': rs.w });
+      rs.track = svgEl('circle', { class: 'bbt-ring-track', cx, cy, r: rs.r, 'stroke-width': rs.w, stroke: rs.color });
       svg.appendChild(rs.track);
       const frac = rs.total ? rs.done / rs.total : 0;
       if (frac > 0) {
@@ -802,7 +812,7 @@
       }
     });
 
-    svg.appendChild(svgEl('circle', { class: 'bbt-ring-center', cx, cy, r: BAND_INNER - courseW / 2 - 1.5 }));
+    svg.appendChild(svgEl('circle', { class: 'bbt-ring-center', cx, cy, r: BAND_INNER - courseW / 2 - gap }));
 
     const tTop = svgEl('text', { class: 'bbt-ring-top', x: cx, y: cy - 15, 'text-anchor': 'middle', 'dominant-baseline': 'middle' });
     const tPct = svgEl('text', { class: 'bbt-ring-pct', x: cx, y: cy, 'text-anchor': 'middle', 'dominant-baseline': 'middle' });
@@ -825,10 +835,21 @@
       });
     }
 
+    // A deliberate pause takes over the readout, so sweeping the pointer across
+    // the chart on the way somewhere else leaves the week total alone.
+    function arm(spec) {
+      clearTimeout(ringHoverTimer);
+      ringHoverTimer = setTimeout(() => show(spec), RING_HOVER_DELAY_MS);
+    }
+    function disarm() {
+      clearTimeout(ringHoverTimer);
+      show(null);
+    }
+
     specs.forEach((rs) => {
       const hit = svgEl('circle', { class: 'bbt-ring-hit', cx, cy, r: rs.r, 'stroke-width': rs.hit });
-      hit.addEventListener('mouseenter', () => show(rs));
-      hit.addEventListener('mouseleave', () => show(null));
+      hit.addEventListener('mouseenter', () => arm(rs));
+      hit.addEventListener('mouseleave', disarm);
       const t = svgEl('title');
       t.textContent = rs.full + ' — ' + rs.done + ' of ' + rs.total + ' done';
       hit.appendChild(t);
@@ -844,8 +865,8 @@
         el('span', { class: 'bbt-legend-name', text: shortCourse(c.name) }),
         el('span', { class: 'bbt-legend-count', text: c.done + '/' + c.total }),
       ]);
-      row.addEventListener('mouseenter', () => show(spec));
-      row.addEventListener('mouseleave', () => show(null));
+      row.addEventListener('mouseenter', () => arm(spec));
+      row.addEventListener('mouseleave', disarm);
       spec.row = row;
       legend.appendChild(row);
     });
