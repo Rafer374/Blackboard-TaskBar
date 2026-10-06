@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Blackboard TaskBar
 // @namespace    https://github.com/Rafer374/Blackboard-TaskBar
-// @version      0.6.0
+// @version      0.7.0
 // @description  Local assignment to-do sidebar for Blackboard Learn Ultra. No backend, no telemetry, runs entirely in your browser.
 // @author       Rafer374
 // @license      PolyForm-Noncommercial-1.0.0; https://polyformproject.org/licenses/noncommercial/1.0.0
@@ -194,6 +194,7 @@
           if (Number.isNaN(dueAt.getTime())) return;
           const g = byColumn.get(c.id);
           let status = null;   // null = still open; otherwise a short label
+          let score = null;    // points earned, once it has been graded
           let verify = null;   // attempt to confirm before trusting the row
           if (g) {
             if (g.isExempt === true) return; // not a task for this student
@@ -201,6 +202,8 @@
             const attemptId = g.lastAttemptId || g.firstAttemptId || null;
             if (scored) {
               status = 'Graded'; // a score exists, so it was definitely turned in
+              const n = Number(g.effectiveScore);
+              if (!Number.isNaN(n)) score = n;
             } else if (g.status && this.SUBMITTED_STATUSES[g.status]) {
               // No score yet. Only an actual attempt counts as turned in, and
               // whether that attempt was submitted is checked below.
@@ -219,6 +222,7 @@
             points,
             submitted: status !== null,
             status,
+            score,
             note: null,
             verify,
             url: this.itemUrl(course.id, c.contentId, c.scoreProviderHandle),
@@ -459,6 +463,10 @@
     return a + ' – ' + b;
   }
 
+  function fmtNum(v) {
+    return Number.isInteger(v) ? String(v) : String(Math.round(v * 100) / 100);
+  }
+
   function fmtPoints(p) {
     if (p === null || p === undefined || Number.isNaN(p)) return '';
     return (Number.isInteger(p) ? p : p.toFixed(2)) + ' pts';
@@ -524,12 +532,17 @@
     }
     .bbt-progress svg { flex-shrink: 0; display: block; }
     .bbt-ring-track { fill: none; stroke: #ececec; }
+    .bbt-ring-center { fill: #fff; }
     .bbt-ring-fill { fill: none; stroke-linecap: round; transform: rotate(-90deg); transform-origin: 50% 50%; }
     .bbt-ring-pct { font-size: 16px; font-weight: 700; fill: #222; }
     .bbt-ring-sub { font-size: 9px; fill: #666; }
+    .bbt-ring-top { font-size: 9px; font-weight: 600; fill: #666; }
+    .bbt-ring-hit { fill: none; stroke: transparent; pointer-events: stroke; cursor: pointer; }
     .bbt-legend { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; font-size: 12px; }
     .bbt-legend-title { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: #666; margin-bottom: 2px; }
-    .bbt-legend-row { display: flex; align-items: center; gap: 6px; min-width: 0; }
+    .bbt-legend-row { display: flex; align-items: center; gap: 6px; min-width: 0; border-radius: 3px; padding: 0 3px; margin: 0 -3px; cursor: pointer; }
+    .bbt-legend-row.bbt-on { background: #eef3fb; }
+    .bbt-legend-row.bbt-on .bbt-legend-name, .bbt-legend-row.bbt-on .bbt-legend-count { color: #111; font-weight: 600; }
     .bbt-legend-dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
     .bbt-legend-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #333; }
     .bbt-legend-count { color: #666; font-variant-numeric: tabular-nums; }
@@ -557,6 +570,10 @@
     .bbt-item-status {
       background: #e6f2ea; color: #1d6b3a; border-radius: 3px; padding: 0 5px;
       font-size: 11px; font-weight: 600;
+    }
+    .bbt-item-score {
+      background: #e8eef9; color: #1a4d8f; border-radius: 3px; padding: 0 5px;
+      font-size: 11px; font-weight: 700; font-variant-numeric: tabular-nums;
     }
     .bbt-item-note {
       background: #fdf0d9; color: #8a5a00; border-radius: 3px; padding: 0 5px;
@@ -712,8 +729,16 @@
     cb.disabled = !!it.submitted; // Blackboard's state wins; nothing to toggle
     const meta = [el('span', { class: 'bbt-item-course', text: it.courseName, title: it.courseName })];
     meta.push(el('span', { text: timeOnly ? fmtTime(it.dueAt) : fmtDue(it.dueAt) }));
-    const pts = fmtPoints(it.points);
-    if (pts) meta.push(el('span', { text: pts }));
+    if (it.score !== null && it.score !== undefined) {
+      // Graded: the score replaces the bare points total, which it contains.
+      const outOf = it.points ? '/' + fmtNum(it.points) : '';
+      const pct = it.points ? ' (' + Math.round(100 * it.score / it.points) + '%)' : '';
+      meta.push(el('span', { class: 'bbt-item-score', title: 'Scored ' + fmtNum(it.score) + outOf + pct,
+        text: fmtNum(it.score) + outOf }));
+    } else {
+      const pts = fmtPoints(it.points);
+      if (pts) meta.push(el('span', { text: pts }));
+    }
     if (it.submitted) meta.push(el('span', { class: 'bbt-item-status', text: it.status }));
     else if (it.note) meta.push(el('span', { class: 'bbt-item-note', title: 'Started but not submitted', text: it.note }));
     return el('div', { class: 'bbt-item' + (done ? ' bbt-done' : '') }, [
@@ -732,50 +757,100 @@
     return n;
   }
 
-  // Concentric rings: outer = all courses combined, inner = one per course
-  // (fixed color per course, legend alongside so color is never the only cue).
+  // Concentric rings: the outer ring is the whole week, with one ring inside
+  // per course. Radii and stroke widths are derived from the course count so
+  // every course always gets a ring, however many there are. Each ring carries
+  // an invisible wider stroke to hover, and hovering a ring (or its legend row)
+  // retargets the center readout to that course.
   function renderProgress(start, end, label) {
     const prog = weekProgress(start, end);
     const slots = courseSlots();
     const rings = prog.courses
       .map((c) => ({ ...c, slot: slots.get(c.courseId) }))
-      .sort((a, b) => a.slot.index - b.slot.index)
-      .slice(0, COURSE_COLORS.length);
+      .sort((a, b) => a.slot.index - b.slot.index);
 
-    const size = 104, cx = size / 2, cy = size / 2;
-    const MIN_R = 22; // keep inner rings clear of the center text
-    const svg = svgEl('svg', { width: size, height: size, viewBox: '0 0 ' + size + ' ' + size, role: 'img',
-      'aria-label': prog.done + ' of ' + prog.total + ' complete' });
-    const ringSpecs = [{ r: 47, w: 6, color: '#2b5797', done: prog.done, total: prog.total }];
-    rings.forEach((c, i) => ringSpecs.push({ r: 47 - 7 * (i + 1), w: 4, color: c.slot.color, done: c.done, total: c.total }));
-    ringSpecs.forEach((rs) => {
-      if (rs.r < MIN_R) return; // legend still lists the course
+    const size = 128, cx = size / 2, cy = size / 2;
+    const BAND_OUTER = 48, BAND_INNER = 24; // where the per-course rings sit
+    const n = rings.length;
+    const step = n > 1 ? Math.min(7, (BAND_OUTER - BAND_INNER) / (n - 1)) : 7;
+    const courseW = Math.max(2.5, Math.min(5, step - 2));
+
+    const svg = svgEl('svg', {
+      width: size, height: size, viewBox: '0 0 ' + size + ' ' + size, role: 'img',
+      'aria-label': prog.done + ' of ' + prog.total + ' assignments complete ' + label,
+    });
+
+    const specs = [{
+      key: '', r: 59, w: 7, color: '#2b5797', hit: 11,
+      done: prog.done, total: prog.total, label: 'Week', full: label,
+    }];
+    rings.forEach((c, i) => specs.push({
+      key: c.courseId, r: BAND_OUTER - step * i, w: courseW, color: c.slot.color,
+      hit: Math.max(step, courseW + 1),
+      done: c.done, total: c.total, label: shortCourse(c.name).slice(0, 10), full: c.name,
+    }));
+
+    specs.forEach((rs) => {
       const circ = 2 * Math.PI * rs.r;
-      svg.appendChild(svgEl('circle', { class: 'bbt-ring-track', cx, cy, r: rs.r, 'stroke-width': rs.w }));
+      rs.track = svgEl('circle', { class: 'bbt-ring-track', cx, cy, r: rs.r, 'stroke-width': rs.w });
+      svg.appendChild(rs.track);
       const frac = rs.total ? rs.done / rs.total : 0;
       if (frac > 0) {
-        svg.appendChild(svgEl('circle', { class: 'bbt-ring-fill', cx, cy, r: rs.r, 'stroke-width': rs.w, stroke: rs.color,
-          'stroke-dasharray': (circ * frac) + ' ' + circ }));
+        rs.fill = svgEl('circle', { class: 'bbt-ring-fill', cx, cy, r: rs.r, 'stroke-width': rs.w, stroke: rs.color,
+          'stroke-dasharray': (circ * frac) + ' ' + circ });
+        svg.appendChild(rs.fill);
       }
     });
-    const pct = prog.total ? Math.round(100 * prog.done / prog.total) : 0;
-    const t1 = svgEl('text', { class: 'bbt-ring-pct', x: cx, y: cy - 1, 'text-anchor': 'middle', 'dominant-baseline': 'middle' });
-    t1.textContent = pct + '%';
-    const t2 = svgEl('text', { class: 'bbt-ring-sub', x: cx, y: cy + 12, 'text-anchor': 'middle', 'dominant-baseline': 'middle' });
-    t2.textContent = prog.done + '/' + prog.total + ' done';
-    svg.appendChild(t1); svg.appendChild(t2);
+
+    svg.appendChild(svgEl('circle', { class: 'bbt-ring-center', cx, cy, r: BAND_INNER - courseW / 2 - 1.5 }));
+
+    const tTop = svgEl('text', { class: 'bbt-ring-top', x: cx, y: cy - 15, 'text-anchor': 'middle', 'dominant-baseline': 'middle' });
+    const tPct = svgEl('text', { class: 'bbt-ring-pct', x: cx, y: cy, 'text-anchor': 'middle', 'dominant-baseline': 'middle' });
+    const tSub = svgEl('text', { class: 'bbt-ring-sub', x: cx, y: cy + 14, 'text-anchor': 'middle', 'dominant-baseline': 'middle' });
+    svg.appendChild(tTop); svg.appendChild(tPct); svg.appendChild(tSub);
 
     const legend = el('div', { class: 'bbt-legend' }, [el('div', { class: 'bbt-legend-title', text: label })]);
     if (!rings.length) legend.appendChild(el('div', { class: 'bbt-legend-empty', text: 'Nothing due.' }));
-    rings.forEach((c) => {
-      const dot = el('span', { class: 'bbt-legend-dot' }); dot.style.background = c.slot.color;
-      legend.appendChild(el('div', { class: 'bbt-legend-row', title: c.name }, [
+
+    // Center readout + highlight, driven by whichever ring is hovered.
+    function show(spec) {
+      const s = spec || specs[0];
+      tTop.textContent = s.label;
+      tPct.textContent = (s.total ? Math.round(100 * s.done / s.total) : 0) + '%';
+      tSub.textContent = s.done + '/' + s.total + ' done';
+      specs.forEach((o) => {
+        const on = o === s && o !== specs[0];
+        if (o.fill) o.fill.setAttribute('stroke-width', on ? o.w + 2 : o.w);
+        if (o.row) o.row.classList.toggle('bbt-on', on);
+      });
+    }
+
+    specs.forEach((rs) => {
+      const hit = svgEl('circle', { class: 'bbt-ring-hit', cx, cy, r: rs.r, 'stroke-width': rs.hit });
+      hit.addEventListener('mouseenter', () => show(rs));
+      hit.addEventListener('mouseleave', () => show(null));
+      const t = svgEl('title');
+      t.textContent = rs.full + ' — ' + rs.done + ' of ' + rs.total + ' done';
+      hit.appendChild(t);
+      svg.appendChild(hit);
+    });
+
+    rings.forEach((c, i) => {
+      const spec = specs[i + 1];
+      const dot = el('span', { class: 'bbt-legend-dot' });
+      dot.style.background = c.slot.color;
+      const row = el('div', { class: 'bbt-legend-row', title: c.name }, [
         dot,
         el('span', { class: 'bbt-legend-name', text: shortCourse(c.name) }),
         el('span', { class: 'bbt-legend-count', text: c.done + '/' + c.total }),
-      ]));
+      ]);
+      row.addEventListener('mouseenter', () => show(spec));
+      row.addEventListener('mouseleave', () => show(null));
+      spec.row = row;
+      legend.appendChild(row);
     });
 
+    show(null);
     progressBox.textContent = '';
     progressBox.appendChild(svg);
     progressBox.appendChild(legend);
