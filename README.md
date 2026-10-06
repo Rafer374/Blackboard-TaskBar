@@ -6,7 +6,7 @@ https://github.com/Rafer374/Blackboard-TaskBar/raw/main/blackboard-taskbar.user.
 
 **License:** [PolyForm Noncommercial 1.0.0](LICENSE) — free for personal/noncommercial use, no reselling.
 
-> **Status:** v0.6 beta. Reads your gradebook in each current course, so items you have already submitted or that have been graded drop off automatically. Tested on one Ultra site so far.
+> **Status:** v0.7 beta. Reads your gradebook in each current course, so items you have already submitted or that have been graded drop off automatically. Tested on one Ultra site so far.
 
 ## What it does
 
@@ -16,8 +16,9 @@ https://github.com/Rafer374/Blackboard-TaskBar/raw/main/blackboard-taskbar.user.
 - **Week view** shows one week at a time, grouped by day, with previous/next arrows to look ahead. Click the date range to jump back to the current week.
 - Filter by course with a dropdown.
 - The count in the header, and on the collapsed tab, is how many assignments you still have left in the week you're looking at.
-- A weekly progress ring: outer ring is everything due that week, inner rings are one per course, with a legend. Counts both work you've submitted in Blackboard and items you've checked off.
+- A weekly progress ring: the outer ring is everything due that week, and every course gets its own inner ring in the colour shown beside it in the legend. Hover a ring or a legend row and the centre switches to that course's completion. Counts both work you've submitted in Blackboard and items you've checked off.
 - Anything you've already submitted or that has been graded counts as done automatically and is hidden by default. Turn on **Show done** to see it, tagged Submitted or Graded.
+- Graded items show the score you got, such as 9.5/10, with the percentage in the tooltip.
 - An assignment you opened or saved but never turned in still counts as remaining, tagged **Draft started**. Only a real submission clears it.
 - Check remaining items off manually. This is stored only in your browser and does **not** touch Blackboard's actual submission state.
 - Collapse it to a small vertical tab on the right edge of the window. Click the tab to open it again.
